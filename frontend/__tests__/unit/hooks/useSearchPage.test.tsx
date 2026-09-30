@@ -320,4 +320,98 @@ describe('useSearchPage', () => {
       expect(push).toHaveBeenCalledWith('?q=nest')
     })
   })
+
+  it('ignores stale responses when rapidly changing pages', async () => {
+    const scrollTo = jest.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
+    try {
+      let resolvePage2!: (value: unknown) => void
+      let resolvePage3!: (value: unknown) => void
+
+      const page2Promise = new Promise((resolve) => {
+        resolvePage2 = resolve
+      })
+      const page3Promise = new Promise((resolve) => {
+        resolvePage3 = resolve
+      })
+
+      const { result } = await renderSearchPage('page=1')
+
+      mockFetchAlgoliaData.mockReturnValueOnce(page2Promise).mockReturnValueOnce(page3Promise)
+
+      act(() => {
+        result.current.handlePageChange(2)
+      })
+
+      act(() => {
+        result.current.handlePageChange(3)
+      })
+
+      // Newer request (page 3) resolves first
+      await act(async () => {
+        resolvePage3({
+          hits: [{ objectID: 'page-3' }],
+          totalPages: 5,
+        })
+      })
+
+      expect(result.current.items).toEqual([{ objectID: 'page-3' }])
+
+      // Slower, older request (page 2) resolves after
+      await act(async () => {
+        resolvePage2({
+          hits: [{ objectID: 'page-2' }],
+          totalPages: 5,
+        })
+      })
+
+      // Stale results must not overwrite current page
+      expect(result.current.items).toEqual([{ objectID: 'page-3' }])
+    } finally {
+      scrollTo.mockRestore()
+    }
+  })
+
+  it('ignores stale errors when a newer request is already in flight', async () => {
+    const scrollTo = jest.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
+    try {
+      const { handleAppError } = jest.requireMock('app/global-error')
+      let rejectPage2!: (error: unknown) => void
+      let resolvePage3!: (value: unknown) => void
+
+      const page2Promise = new Promise((_, reject) => {
+        rejectPage2 = reject
+      })
+      const page3Promise = new Promise((resolve) => {
+        resolvePage3 = resolve
+      })
+
+      const { result } = await renderSearchPage('page=1')
+
+      mockFetchAlgoliaData.mockReturnValueOnce(page2Promise).mockReturnValueOnce(page3Promise)
+
+      act(() => {
+        result.current.handlePageChange(2)
+      })
+
+      act(() => {
+        result.current.handlePageChange(3)
+      })
+
+      await act(async () => {
+        resolvePage3({
+          hits: [{ objectID: 'page-3' }],
+          totalPages: 5,
+        })
+      })
+
+      await act(async () => {
+        rejectPage2(new Error('Network error on old request'))
+      })
+
+      expect(handleAppError).not.toHaveBeenCalled()
+      expect(result.current.items).toEqual([{ objectID: 'page-3' }])
+    } finally {
+      scrollTo.mockRestore()
+    }
+  })
 })
